@@ -1,9 +1,32 @@
 const TelegramBot = require("node-telegram-bot-api");
 require("dotenv").config();
-const fetch = global.fetch || require("node-fetch");
 const Tesseract = require("tesseract.js");  
 const fs = require("fs");
 const https = require("https");
+const path = require("path");
+
+// Fetch importini to'g'ri boshqarish
+let fetchModule = null;
+
+async function getFetch() {
+    if (fetchModule) {
+        return fetchModule;
+    }
+    
+    if (typeof globalThis.fetch === 'function') {
+        fetchModule = globalThis.fetch;
+        return fetchModule;
+    }
+    
+    try {
+        const nodeFetch = await import('node-fetch');
+        fetchModule = nodeFetch.default;
+        return fetchModule;
+    } catch (error) {
+        console.error('Fetch import xatosi:', error);
+        throw new Error('Fetch moduli topilmadi');
+    }
+}
 
 const BOT_TOKEN = process.env.TELEGRAM_TOKEN;
 const OPENROUTER_KEY = process.env.OPENROUTER_KEY;
@@ -58,8 +81,22 @@ async function downloadImage(url, path) {
     return new Promise((resolve, reject) => {
         const file = fs.createWriteStream(path);
         https.get(url, (response) => {
+            // HTTP xatolarni tekshirish
+            if (response.statusCode !== 200) {
+                fs.unlink(path, () => {});
+                file.close();
+                reject(new Error(`HTTP ${response.statusCode}: ${response.statusMessage}`));
+                return;
+            }
+            
             response.pipe(file);
-            file.on("finish", () => file.close(resolve));
+            file.on("finish", () => {
+                file.close(resolve);
+            });
+            file.on("error", (err) => {
+                fs.unlink(path, () => {});
+                reject(err);
+            });
         }).on("error", (err) => {
             fs.unlink(path, () => {});
             reject(err);
@@ -81,26 +118,122 @@ bot.on("message", async (msg) => {
         return;
     }
 
-    bot.sendChatAction(chatId, "typing");
+    await bot.sendChatAction(chatId, "typing");
 
     try {
         // Rasm bo'lsa
         if (msg.photo) {
-            // … OCR va AI so‘rovi kodi (avvalgi tuzatilgan kod) …
+            const photo = msg.photo[msg.photo.length - 1]; // Eng katta rasm
+            const fileId = photo.file_id;
+            
+            const file = await bot.getFile(fileId);
+            const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
+            const tempPath = path.join(__dirname, `temp_${fileId}.jpg`);
+            
+            await downloadImage(fileUrl, tempPath);
+            
+            // OCR bilan matn olish
+            let text;
+            try {
+                // Tesseract til kodlari: eng (English), rus (Russian)
+                // uzb (Uzbek) mavjud emas bo'lishi mumkin, shuning uchun eng+rus ishlatamiz
+                const result = await Tesseract.recognize(tempPath, 'eng+rus', {
+                    logger: m => console.log(m)
+                });
+                text = result.data.text;
+            } catch (ocrError) {
+                console.error("OCR xatosi:", ocrError);
+                const errorMsg = lang === "ru" 
+                    ? "❌ Rasmdan matn o'qib bo'lmadi" 
+                    : lang === "en" 
+                    ? "❌ Could not read text from image" 
+                    : "❌ Rasmdan matn o'qib bo'lmadi";
+                await bot.sendMessage(chatId, errorMsg);
+                fs.unlinkSync(tempPath);
+                return;
+            }
+            
+            // Temp faylni o'chirish
+            fs.unlinkSync(tempPath);
+            
+            if (!text || text.trim().length === 0) {
+                const noTextMsg = lang === "ru" 
+                    ? "❌ Rasmdan matn topilmadi" 
+                    : lang === "en" 
+                    ? "❌ No text found in image" 
+                    : "❌ Rasmdan matn topilmadi";
+                await bot.sendMessage(chatId, noTextMsg);
+                return;
+            }
+            
+            // OCR natijasini AI ga yuborish
+            const systemMsg = lang === "ru"
+                ? "Вы умный помощник. Проанализируйте текст с изображения и ответьте на вопросы пользователя."
+                : lang === "en"
+                ? "You are a smart assistant. Analyze the text from the image and answer the user's questions."
+                : "Siz aqlli yordamchisiz. Rasmdan olingan matnni tahlil qiling va foydalanuvchining savoliga javob bering.";
+            
+            const userMsg = lang === "ru"
+                ? `Текст с изображения: ${text}\n\nОтветьте на вопросы по этому тексту или проанализируйте его.`
+                : lang === "en"
+                ? `Text from image: ${text}\n\nAnswer questions about this text or analyze it.`
+                : `Rasmdan olingan matn: ${text}\n\nBu matn haqida javob bering yoki tahlil qiling.`;
+            
+            const chatPayload = {
+                model: "gpt-3.5-turbo",
+                messages: [
+                    { role: "system", content: systemMsg },
+                    { role: "user", content: userMsg }
+                ]
+            };
+            
+            const fetch = await getFetch();
+            const chatRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${OPENROUTER_KEY}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(chatPayload)
+            });
+            
+            if (!chatRes.ok) {
+                console.error("OpenRouter xatosi:", chatRes.status, await chatRes.text());
+                const errorMsg = lang === "ru" 
+                    ? "❌ Ошибка при получении ответа" 
+                    : lang === "en" 
+                    ? "❌ Error getting response" 
+                    : "❌ Javobni olishda xatolik";
+                await bot.sendMessage(chatId, errorMsg);
+                return;
+            }
+            
+            const chatData = await chatRes.json();
+            const reply = chatData?.choices?.[0]?.message?.content || 
+                         (lang === "ru" ? "❌ Ответ не найден" : lang === "en" ? "❌ Answer not found" : "❌ Javob topilmadi");
+            
+            await bot.sendMessage(chatId, reply);
             return;
         }
 
         // Oddiy matn
         if (!msg.text) return;
 
+        const systemMsg = lang === "ru"
+            ? "Вы умный помощник. Отвечайте на вопросы пользователя подробно и полезно."
+            : lang === "en"
+            ? "You are a smart assistant. Answer the user's questions in detail and helpfully."
+            : "Siz aqlli yordamchisiz, foydalanuvchining savoliga javob bering.";
+        
         const chatPayload = {
             model: "gpt-3.5-turbo",
             messages: [
-                { role: "system", content: "Siz aqlli yordamchisiz, foydalanuvchining savoliga javob bering." },
+                { role: "system", content: systemMsg },
                 { role: "user", content: msg.text }
             ]
         };
 
+        const fetch = await getFetch();
         const chatRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
             headers: {
