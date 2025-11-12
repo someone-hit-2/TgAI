@@ -155,11 +155,16 @@ bot.on("message", async (msg) => {
             return await bot.sendMessage(chatId, lang === "ru" ? "❌ Ошибка при получении ответа" : lang === "en" ? "❌ Error getting response" : "❌ Javobni olishda xatolik");
         }
 
-        const chatData = await chatRes.json();
-        console.log("Chat javobi:", chatData);
+    const chatData = await chatRes.json();
+console.log("API javobi:", chatData);
 
-        const reply = chatData?.choices?.[0]?.message?.content || (lang === "ru" ? "❌ Ответ не найден" : lang === "en" ? "❌ Answer not found" : "❌ Javob topilmadi");
-        await bot.sendMessage(chatId, reply);
+const reply =
+    chatData?.choices?.[0]?.message?.content || 
+    chatData?.choices?.[0]?.text || 
+    (lang === "ru" ? "❌ Ответ не найден" : lang === "en" ? "❌ Answer not found" : "❌ Javob topilmadi");
+
+await bot.sendMessage(chatId, reply);
+
 
     } catch (err) {
         console.error(err);
