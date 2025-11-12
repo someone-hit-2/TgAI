@@ -16,7 +16,7 @@ if (!BOT_TOKEN || !OPENROUTER_KEY) {
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 const userLanguage = {}; 
 
-// Til tanlash
+// Til tanlash va /start
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     const opts = {
@@ -53,7 +53,7 @@ bot.on("callback_query", async (query) => {
     }
 });
 
-// Rasm yuklash
+// Rasm yuklash funksiyasi
 async function downloadImage(url, path) {
     return new Promise((resolve, reject) => {
         const file = fs.createWriteStream(path);
@@ -72,6 +72,7 @@ bot.on("message", async (msg) => {
     const chatId = msg.chat.id;
     const lang = userLanguage[chatId] || "uz";
 
+    // Voice xabarlar
     if (msg.voice) {
         await bot.sendMessage(chatId, lang === "ru" ? "❌ Я могу отвечать только текстом" : lang === "en" ? "❌ I can only reply in text" : "❌ Men faqat matn bilan javob bera olaman");
         return;
@@ -80,7 +81,7 @@ bot.on("message", async (msg) => {
     bot.sendChatAction(chatId, "typing");
 
     try {
-        // Agar rasm bo'lsa
+        // Rasm bo'lsa
         if (msg.photo) {
             const fileId = msg.photo[msg.photo.length - 1].file_id;
             const fileLink = await bot.getFileLink(fileId);
@@ -89,24 +90,24 @@ bot.on("message", async (msg) => {
 
             bot.sendChatAction(chatId, "typing");
 
-            // OCR bilan matn olish
-            const { data: { text } } = await Tesseract.recognize(localFile, 'eng', {
+            // OCR matn olish
+            const { data: { text } } = await Tesseract.recognize(localFile, 'eng+uz+rus', {
                 logger: m => console.log("OCR:", m)
             });
 
             console.log("OCR matni:", text);
 
-            fs.unlinkSync(localFile); // faylni o'chirish
+            fs.unlinkSync(localFile);
 
             if (!text.trim()) {
                 return await bot.sendMessage(chatId, lang === "ru" ? "❌ Текст не найден на изображении" : lang === "en" ? "❌ No text found in the image" : "❌ Rasmdan matn topilmadi");
             }
 
-            // OpenRouter API ga so'rov
+            // AI so'rov
             const payload = {
                 model: "gpt-3.5-turbo",
                 messages: [
-                    { role: "system", content: "Siz test varaqasini tahlil qiluvchi AI yordamchisiz. Matndagi savollar va javoblarni toping." },
+                    { role: "system", content: "Siz aqlli yordamchisiz, foydalanuvchining savoliga javob bering." },
                     { role: "user", content: text }
                 ]
             };
@@ -128,17 +129,24 @@ bot.on("message", async (msg) => {
             const data = await res.json();
             console.log("Chat javobi:", data);
 
-            const reply = data?.choices?.[0]?.message?.content || (lang === "ru" ? "❌ Ответ не найден" : lang === "en" ? "❌ Answer not found" : "❌ Javob topilmadi");
+            const reply =
+                data?.choices?.[0]?.message?.content ||
+                data?.choices?.[0]?.text ||
+                (lang === "ru" ? "❌ Ответ не найден" : lang === "en" ? "❌ Answer not found" : "❌ Javob topilmadi");
+
             await bot.sendMessage(chatId, reply);
             return;
         }
 
-        // Agar oddiy matn bo'lsa
+        // Oddiy matn
         if (!msg.text) return;
 
         const chatPayload = {
             model: "gpt-3.5-turbo",
-            messages: [{ role: "user", content: msg.text }]
+            messages: [
+                { role: "system", content: "Siz aqlli yordamchisiz, foydalanuvchining savoliga javob bering." },
+                { role: "user", content: msg.text }
+            ]
         };
 
         const chatRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -155,16 +163,15 @@ bot.on("message", async (msg) => {
             return await bot.sendMessage(chatId, lang === "ru" ? "❌ Ошибка при получении ответа" : lang === "en" ? "❌ Error getting response" : "❌ Javobni olishda xatolik");
         }
 
-    const chatData = await chatRes.json();
-console.log("API javobi:", chatData);
+        const chatData = await chatRes.json();
+        console.log("API javobi:", chatData);
 
-const reply =
-    chatData?.choices?.[0]?.message?.content || 
-    chatData?.choices?.[0]?.text || 
-    (lang === "ru" ? "❌ Ответ не найден" : lang === "en" ? "❌ Answer not found" : "❌ Javob topilmadi");
+        const reply =
+            chatData?.choices?.[0]?.message?.content ||
+            chatData?.choices?.[0]?.text ||
+            (lang === "ru" ? "❌ Ответ не найден" : lang === "en" ? "❌ Answer not found" : "❌ Javob topilmadi");
 
-await bot.sendMessage(chatId, reply);
-
+        await bot.sendMessage(chatId, reply);
 
     } catch (err) {
         console.error(err);
