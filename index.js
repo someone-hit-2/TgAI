@@ -14,11 +14,9 @@ if (!BOT_TOKEN || !OPENROUTER_KEY) {
 }
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
-
-
 const userLanguage = {}; 
 
-
+// Til tanlash
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     const opts = {
@@ -30,7 +28,6 @@ bot.onText(/\/start/, async (msg) => {
             ],
         },
     };
-
     await bot.sendMessage(chatId, "👋 Salom! Men ChatMaster AI 🤖\n\nIltimos tilni tanlang / Please choose your language / Пожалуйста, выберите язык:", opts);
 });
 
@@ -56,7 +53,7 @@ bot.on("callback_query", async (query) => {
     }
 });
 
-
+// Rasm yuklash
 async function downloadImage(url, path) {
     return new Promise((resolve, reject) => {
         const file = fs.createWriteStream(path);
@@ -70,11 +67,11 @@ async function downloadImage(url, path) {
     });
 }
 
+// Asosiy xabar qabul qilish
 bot.on("message", async (msg) => {
     const chatId = msg.chat.id;
     const lang = userLanguage[chatId] || "uz";
 
-    
     if (msg.voice) {
         await bot.sendMessage(chatId, lang === "ru" ? "❌ Я могу отвечать только текстом" : lang === "en" ? "❌ I can only reply in text" : "❌ Men faqat matn bilan javob bera olaman");
         return;
@@ -83,7 +80,7 @@ bot.on("message", async (msg) => {
     bot.sendChatAction(chatId, "typing");
 
     try {
-      
+        // Agar rasm bo'lsa
         if (msg.photo) {
             const fileId = msg.photo[msg.photo.length - 1].file_id;
             const fileLink = await bot.getFileLink(fileId);
@@ -92,17 +89,20 @@ bot.on("message", async (msg) => {
 
             bot.sendChatAction(chatId, "typing");
 
-           
+            // OCR bilan matn olish
             const { data: { text } } = await Tesseract.recognize(localFile, 'eng', {
-                logger: m => console.log(m)
+                logger: m => console.log("OCR:", m)
             });
 
-            fs.unlinkSync(localFile); // rasmni o'chirish
+            console.log("OCR matni:", text);
+
+            fs.unlinkSync(localFile); // faylni o'chirish
 
             if (!text.trim()) {
                 return await bot.sendMessage(chatId, lang === "ru" ? "❌ Текст не найден на изображении" : lang === "en" ? "❌ No text found in the image" : "❌ Rasmdan matn topilmadi");
             }
 
+            // OpenRouter API ga so'rov
             const payload = {
                 model: "gpt-3.5-turbo",
                 messages: [
@@ -120,13 +120,20 @@ bot.on("message", async (msg) => {
                 body: JSON.stringify(payload)
             });
 
+            if (!res.ok) {
+                console.error("OpenRouter xatosi:", res.status, await res.text());
+                return await bot.sendMessage(chatId, lang === "ru" ? "❌ Ошибка при получении ответа" : lang === "en" ? "❌ Error getting response" : "❌ Javobni olishda xatolik");
+            }
+
             const data = await res.json();
+            console.log("Chat javobi:", data);
+
             const reply = data?.choices?.[0]?.message?.content || (lang === "ru" ? "❌ Ответ не найден" : lang === "en" ? "❌ Answer not found" : "❌ Javob topilmadi");
             await bot.sendMessage(chatId, reply);
             return;
         }
 
-    
+        // Agar oddiy matn bo'lsa
         if (!msg.text) return;
 
         const chatPayload = {
@@ -143,7 +150,14 @@ bot.on("message", async (msg) => {
             body: JSON.stringify(chatPayload)
         });
 
+        if (!chatRes.ok) {
+            console.error("OpenRouter xatosi:", chatRes.status, await chatRes.text());
+            return await bot.sendMessage(chatId, lang === "ru" ? "❌ Ошибка при получении ответа" : lang === "en" ? "❌ Error getting response" : "❌ Javobni olishda xatolik");
+        }
+
         const chatData = await chatRes.json();
+        console.log("Chat javobi:", chatData);
+
         const reply = chatData?.choices?.[0]?.message?.content || (lang === "ru" ? "❌ Ответ не найден" : lang === "en" ? "❌ Answer not found" : "❌ Javob topilmadi");
         await bot.sendMessage(chatId, reply);
 
