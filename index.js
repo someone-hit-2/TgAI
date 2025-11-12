@@ -5,27 +5,72 @@ const fs = require("fs");
 const https = require("https");
 const path = require("path");
 
-// Fetch importini to'g'ri boshqarish
-let fetchModule = null;
+// Fetch funksiyasini https moduli bilan yaratish (CommonJS uchun)
+function fetch(url, options = {}) {
+    return new Promise((resolve, reject) => {
+        try {
+            const urlObj = new URL(url);
+            const requestOptions = {
+                hostname: urlObj.hostname,
+                port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
+                path: urlObj.pathname + urlObj.search,
+                method: options.method || 'GET',
+                headers: {
+                    ...options.headers
+                }
+            };
 
-async function getFetch() {
-    if (fetchModule) {
-        return fetchModule;
-    }
-    
-    if (typeof globalThis.fetch === 'function') {
-        fetchModule = globalThis.fetch;
-        return fetchModule;
-    }
-    
-    try {
-        const nodeFetch = await import('node-fetch');
-        fetchModule = nodeFetch.default;
-        return fetchModule;
-    } catch (error) {
-        console.error('Fetch import xatosi:', error);
-        throw new Error('Fetch moduli topilmadi');
-    }
+            const protocol = urlObj.protocol === 'https:' ? https : require('http');
+            
+            const req = protocol.request(requestOptions, (res) => {
+                let data = '';
+                
+                res.on('data', (chunk) => {
+                    data += chunk;
+                });
+                
+                res.on('end', () => {
+                    const response = {
+                        ok: res.statusCode >= 200 && res.statusCode < 300,
+                        status: res.statusCode,
+                        statusText: res.statusMessage,
+                        headers: res.headers,
+                        text: () => Promise.resolve(data),
+                        json: () => {
+                            try {
+                                return Promise.resolve(JSON.parse(data));
+                            } catch (e) {
+                                return Promise.reject(new Error(`JSON parsing error: ${e.message}. Data: ${data.substring(0, 200)}`));
+                            }
+                        },
+                        data: data
+                    };
+                    resolve(response);
+                });
+            });
+            
+            req.on('error', (error) => {
+                reject(error);
+            });
+            
+            req.on('timeout', () => {
+                req.destroy();
+                reject(new Error('Request timeout'));
+            });
+            
+            // Timeout qo'shish (60 soniya)
+            req.setTimeout(60000);
+            
+            if (options.body) {
+                const bodyString = typeof options.body === 'string' ? options.body : JSON.stringify(options.body);
+                req.write(bodyString, 'utf8');
+            }
+            
+            req.end();
+        } catch (error) {
+            reject(error);
+        }
+    });
 }
 
 const BOT_TOKEN = process.env.TELEGRAM_TOKEN;
@@ -187,33 +232,50 @@ bot.on("message", async (msg) => {
                 ]
             };
             
-            const fetch = await getFetch();
-            const chatRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-                method: "POST",
-                headers: {
-                    "Authorization": `Bearer ${OPENROUTER_KEY}`,
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify(chatPayload)
-            });
-            
-            if (!chatRes.ok) {
-                console.error("OpenRouter xatosi:", chatRes.status, await chatRes.text());
-                const errorMsg = lang === "ru" 
-                    ? "❌ Ошибка при получении ответа" 
-                    : lang === "en" 
-                    ? "❌ Error getting response" 
-                    : "❌ Javobni olishda xatolik";
-                await bot.sendMessage(chatId, errorMsg);
+            try {
+                const chatRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+                    method: "POST",
+                    headers: {
+                        "Authorization": `Bearer ${OPENROUTER_KEY}`,
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(chatPayload)
+                });
+                
+                if (!chatRes.ok) {
+                    const errorText = await chatRes.text();
+                    console.error("OpenRouter xatosi (rasm):", chatRes.status, errorText);
+                    console.error("Request payload:", JSON.stringify(chatPayload, null, 2));
+                    const errorMsg = lang === "ru" 
+                        ? "❌ Ошибка при получении ответа" 
+                        : lang === "en" 
+                        ? "❌ Error getting response" 
+                        : "❌ Javobni olishda xatolik";
+                    await bot.sendMessage(chatId, errorMsg);
+                    return;
+                }
+                
+                let chatData;
+                try {
+                    chatData = await chatRes.json();
+                } catch (jsonError) {
+                    console.error("JSON parsing xatosi (rasm):", jsonError);
+                    console.error("Response data:", chatRes.data);
+                    await bot.sendMessage(chatId, lang === "ru" ? "❌ Ответ не найден" : lang === "en" ? "❌ Answer not found" : "❌ Javob topilmadi");
+                    return;
+                }
+                
+                const reply = chatData?.choices?.[0]?.message?.content || 
+                             (lang === "ru" ? "❌ Ответ не найден" : lang === "en" ? "❌ Answer not found" : "❌ Javob topilmadi");
+                
+                await bot.sendMessage(chatId, reply);
+                return;
+            } catch (fetchError) {
+                console.error("Fetch xatosi (rasm):", fetchError);
+                console.error("Error stack:", fetchError.stack);
+                await bot.sendMessage(chatId, lang === "ru" ? "❌ Ошибка соединения" : lang === "en" ? "❌ Connection error" : "❌ Ulanish xatosi");
                 return;
             }
-            
-            const chatData = await chatRes.json();
-            const reply = chatData?.choices?.[0]?.message?.content || 
-                         (lang === "ru" ? "❌ Ответ не найден" : lang === "en" ? "❌ Answer not found" : "❌ Javob topilmadi");
-            
-            await bot.sendMessage(chatId, reply);
-            return;
         }
 
         // Oddiy matn
@@ -233,30 +295,44 @@ bot.on("message", async (msg) => {
             ]
         };
 
-        const fetch = await getFetch();
-        const chatRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-            method: "POST",
-            headers: {
-                "Authorization": `Bearer ${OPENROUTER_KEY}`,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(chatPayload)
-        });
+        try {
+            const chatRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${OPENROUTER_KEY}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(chatPayload)
+            });
 
-        if (!chatRes.ok) {
-            console.error("OpenRouter xatosi:", chatRes.status, await chatRes.text());
-            return await bot.sendMessage(chatId, lang === "ru" ? "❌ Ошибка при получении ответа" : lang === "en" ? "❌ Error getting response" : "❌ Javobni olishda xatolik");
+            if (!chatRes.ok) {
+                const errorText = await chatRes.text();
+                console.error("OpenRouter xatosi:", chatRes.status, errorText);
+                console.error("Request payload:", JSON.stringify(chatPayload, null, 2));
+                return await bot.sendMessage(chatId, lang === "ru" ? "❌ Ошибка при получении ответа" : lang === "en" ? "❌ Error getting response" : "❌ Javobni olishda xatolik");
+            }
+
+            let chatData;
+            try {
+                chatData = await chatRes.json();
+                console.log("API javobi:", JSON.stringify(chatData, null, 2));
+            } catch (jsonError) {
+                console.error("JSON parsing xatosi:", jsonError);
+                console.error("Response data:", chatRes.data);
+                return await bot.sendMessage(chatId, lang === "ru" ? "❌ Ответ не найден" : lang === "en" ? "❌ Answer not found" : "❌ Javob topilmadi");
+            }
+
+            const reply =
+                chatData?.choices?.[0]?.message?.content ||
+                chatData?.choices?.[0]?.text ||
+                (lang === "ru" ? "❌ Ответ не найден" : lang === "en" ? "❌ Answer not found" : "❌ Javob topilmadi");
+
+            await bot.sendMessage(chatId, reply);
+        } catch (fetchError) {
+            console.error("Fetch xatosi:", fetchError);
+            console.error("Error stack:", fetchError.stack);
+            await bot.sendMessage(chatId, lang === "ru" ? "❌ Ошибка соединения" : lang === "en" ? "❌ Connection error" : "❌ Ulanish xatosi");
         }
-
-        const chatData = await chatRes.json();
-        console.log("API javobi:", chatData);
-
-        const reply =
-            chatData?.choices?.[0]?.message?.content ||
-            chatData?.choices?.[0]?.text ||
-            (lang === "ru" ? "❌ Ответ не найден" : lang === "en" ? "❌ Answer not found" : "❌ Javob topilmadi");
-
-        await bot.sendMessage(chatId, reply);
 
     } catch (err) {
         console.error(err);
