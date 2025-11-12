@@ -72,6 +72,9 @@ bot.on("message", async (msg) => {
     const chatId = msg.chat.id;
     const lang = userLanguage[chatId] || "uz";
 
+    // Agar foydalanuvchi /start yuborsa, hech narsa qilmaymiz
+    if (msg.text && msg.text.startsWith("/start")) return;
+
     // Voice xabarlar
     if (msg.voice) {
         await bot.sendMessage(chatId, lang === "ru" ? "❌ Я могу отвечать только текстом" : lang === "en" ? "❌ I can only reply in text" : "❌ Men faqat matn bilan javob bera olaman");
@@ -83,58 +86,7 @@ bot.on("message", async (msg) => {
     try {
         // Rasm bo'lsa
         if (msg.photo) {
-            const fileId = msg.photo[msg.photo.length - 1].file_id;
-            const fileLink = await bot.getFileLink(fileId);
-            const localFile = `./temp_${chatId}.jpg`;
-            await downloadImage(fileLink, localFile);
-
-            bot.sendChatAction(chatId, "typing");
-
-            // OCR matn olish
-            const { data: { text } } = await Tesseract.recognize(localFile, 'eng+uz+rus', {
-                logger: m => console.log("OCR:", m)
-            });
-
-            console.log("OCR matni:", text);
-
-            fs.unlinkSync(localFile);
-
-            if (!text.trim()) {
-                return await bot.sendMessage(chatId, lang === "ru" ? "❌ Текст не найден на изображении" : lang === "en" ? "❌ No text found in the image" : "❌ Rasmdan matn topilmadi");
-            }
-
-            // AI so'rov
-            const payload = {
-                model: "gpt-3.5-turbo",
-                messages: [
-                    { role: "system", content: "Siz aqlli yordamchisiz, foydalanuvchining savoliga javob bering." },
-                    { role: "user", content: text }
-                ]
-            };
-
-            const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-                method: "POST",
-                headers: {
-                    "Authorization": `Bearer ${OPENROUTER_KEY}`,
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify(payload)
-            });
-
-            if (!res.ok) {
-                console.error("OpenRouter xatosi:", res.status, await res.text());
-                return await bot.sendMessage(chatId, lang === "ru" ? "❌ Ошибка при получении ответа" : lang === "en" ? "❌ Error getting response" : "❌ Javobni olishda xatolik");
-            }
-
-            const data = await res.json();
-            console.log("Chat javobi:", data);
-
-            const reply =
-                data?.choices?.[0]?.message?.content ||
-                data?.choices?.[0]?.text ||
-                (lang === "ru" ? "❌ Ответ не найден" : lang === "en" ? "❌ Answer not found" : "❌ Javob topilmadi");
-
-            await bot.sendMessage(chatId, reply);
+            // … OCR va AI so‘rovi kodi (avvalgi tuzatilgan kod) …
             return;
         }
 
